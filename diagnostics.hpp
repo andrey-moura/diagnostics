@@ -14,13 +14,13 @@ namespace uva
 				auto start = std::chrono::high_resolution_clock::now();
 				function(std::forward<Args>(args)...);
 				auto end = std::chrono::high_resolution_clock::now();
-				return std::chrono::duration<double>(end - start);
+				return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
 			}
 			else {
 				auto start = std::chrono::high_resolution_clock::now();
 				auto ret = function(std::forward<Args>(args)...);
 				auto end = std::chrono::high_resolution_clock::now();
-				return std::make_pair<decltype(ret), std::chrono::duration<double>>(std::move(ret), std::chrono::duration<double>(end - start));
+				return std::make_pair<decltype(ret), std::chrono::duration_cast<std::chrono::nanoseconds>>(std::move(ret), std::chrono::duration_cast<std::chrono::nanoseconds>(end - start));
 			}
 		}
 	};
