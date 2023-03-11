@@ -11,29 +11,6 @@ using namespace uva;
 using namespace diagnostics;
 
 #ifdef __UVA_WIN__
-std::string get_last_error_message() {
-    //Get the error message ID, if any.
-    DWORD errorMessageID = ::GetLastError();
-    if(errorMessageID == 0) {
-        return std::string(); //No error message has been recorded
-    }
-    
-    LPSTR messageBuffer = nullptr;
-
-    //Ask Win32 to give us the string version of that message ID.
-    //The parameters we pass in, tell Win32 to create the buffer that holds the message for us (because we don't yet know how long the message string will be).
-    size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                                NULL, errorMessageID, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&messageBuffer, 0, NULL);
-    
-    //Copy the error message into a std::string.
-    std::string message(messageBuffer, size);
-    
-    //Free the Win32's string's buffer.
-    LocalFree(messageBuffer);
-            
-    return message;
-}
-
 std::string GetFileNameFromHandle(HANDLE hFile) 
 {
     BOOL bSuccess = FALSE;
@@ -76,7 +53,6 @@ std::string GetFileNameFromHandle(HANDLE hFile)
                                     return drive_path + file_name.substr(view.size());
                                 }
                             } else {
-                                printf("failed to query dos device for drive letter '%c': %s\n", drive_letter, get_last_error_message().c_str());
                                 break;
                             }
 
@@ -84,11 +60,9 @@ std::string GetFileNameFromHandle(HANDLE hFile)
                             while (*it++);
                         }
                     } else {
-                        printf("failed to get logical drives: '%s'\n", get_last_error_message().c_str());
                     }
                 }
                 else {
-                    printf("failed to get get mapped file names: '%s'\n", get_last_error_message().c_str());
                 }
             }
         }
@@ -161,6 +135,7 @@ void basic_debugger::process_event()
                             on_break_point(it->second);
                         }
                     } else {
+                        on_execution_started();
                         m_has_hit_entry_breakpoint = true;
                         m_need_to_continue = true;
                         return;
@@ -170,6 +145,7 @@ void basic_debugger::process_event()
                 case EXCEPTION_SINGLE_STEP:
                     status = DBG_CONTINUE;
                     if(m_debug_event.u.Exception.dwFirstChance) {
+                        current_address = (addr_t)m_debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
                         on_step();
                     }
                 break;
@@ -306,6 +282,31 @@ bool basic_debugger::create_and_attach_debugee_process(const std::string &path)
     return false;
 }
 
+std::string basic_debugger::get_last_error_msg() {
+#ifdef __UVA_WIN__
+    //Get the error message ID, if any.
+    DWORD errorMessageID = ::GetLastError();
+    if(errorMessageID == 0) {
+        return std::string(); //No error message has been recorded
+    }
+    
+    LPSTR messageBuffer = nullptr;
+
+    //Ask Win32 to give us the string version of that message ID.
+    //The parameters we pass in, tell Win32 to create the buffer that holds the message for us (because we don't yet know how long the message string will be).
+    size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                NULL, errorMessageID, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&messageBuffer, 0, NULL);
+    
+    //Copy the error message into a std::string.
+    std::string message(messageBuffer, size);
+    
+    //Free the Win32's string's buffer.
+    LocalFree(messageBuffer);
+            
+    return message;
+#endif
+}
+
 void basic_debugger::run_one()
 {
 #ifdef __UVA_WIN__
@@ -424,171 +425,204 @@ uint8_t uva::diagnostics::basic_debugger::read_char_at(uint64_t address)
     return byte;
 }
 
-class test_debugger : public basic_debugger
+void uva::diagnostics::basic_debugger::set_trap_flag()
 {
-public:
-    virtual void on_new_process(const std::string& path, addr_t address, bool symbols) override
-    {
-        printf("New process '%s' loaded at '%p'", path.c_str(), (void*)address);
+#ifdef __UVA_WIN__
+    CONTEXT lcContext;
+    lcContext.ContextFlags = CONTEXT_ALL;
 
-        if(symbols) {
-            puts(" with symbols.");
-        } else {
-            puts(".");
-        }
-    }
-
-    virtual void on_loaded_dll(const std::string& path, addr_t address, bool symbols) override
-    {
-        printf("Load DLL '%s' at '%p'", path.c_str(), (void*)address);
-
-        if(symbols) {
-            puts(" with symbols.");
-        } else {
-            puts(".");
-        }
-    }
-
-    virtual void on_break_point(const break_point& break_point) override
-    {
-        printf("got a breakpoint at %s:%zi\n", break_point.file.source.c_str(), break_point.line);
-    }
-
-    virtual void on_step() override
-    {
-        puts("got a step");
-    }
-
-    virtual void on_exit_process(size_t exit_code) override
-    {
-        printf("process exited with exit code: %x\n", (unsigned int)exit_code);
-    }
-
-};
-
-int main()
-{
-    std::string process_name;
-    puts("l filename         - load process at filename and attach to it.");
-    puts("r                  - run the loaded process.");
-    puts("ab file line       - add breakpoint at file, line.");
-    puts("ab address         - add breakpoint at address.");
-    puts("p [c|i|cs] address - print char, integer or c-string at address");
-
-    test_debugger debugger;
-
-    std::thread* thread = nullptr;
-
-    std::condition_variable wait_variable;
-
-    while(1) {
-        std::string command;
-        std::cin >> command;
-
-        if(command == "l") {
-            if(thread) {
-                puts("error: currently debugging, stop first.");
-                continue;
-            }
-
-            std::cin >> process_name;
-            thread = new std::thread([&debugger, &process_name, &wait_variable](){
-                debugger.create_and_attach_debugee_process(process_name);
-
-                wait_variable.notify_one();
-
-                std::mutex wait_mutex;
-
-                std::unique_lock<std::mutex> ul(wait_mutex);
-                wait_variable.wait(ul);
-
-                puts("run signal received.");
-                debugger.run();
-            });
-
-            std::mutex wait_mutex;
-            std::unique_lock<std::mutex> ul(wait_mutex);
-            wait_variable.wait(ul);
-
-            puts("loaded signal received.");
-        } else if(command == "r") {
-            if(!thread) {
-                puts("error: not currently debugging, load first.");
-                continue;
-            }
-
-            wait_variable.notify_one();
-        } else if(command == "ab") {
-            std::string first_argument;
-            size_t line;
-
-            std::cin >> first_argument;
-
-            if(first_argument.starts_with("0x")) {
-                first_argument.erase(0, 2);
-
-                uint64_t address = std::stoll(first_argument, nullptr, 16);
-                std::string file = debugger.append_break_point(address);
-
-                if(file.size()) {
-                    printf("break point added at '%s'\n", file.c_str());
-                    //todo show source
-                } else {
-                    printf("break point added at %p, but it may be not relevant to any line.\n", (void*)address);
-                }
-            } else if(isdigit(first_argument.front()))
-            {
-                uint64_t address = std::stoll(first_argument);
-                std::string file = debugger.append_break_point(address);
-
-                if(file.size()) {
-                    printf("break point added at '%s'\n", file.c_str());
-                    //todo show source
-                } else {
-                    printf("break point added at %p, but it may be not relevant to any line.\n", (void*)address);
-                }
-            } else {
-                std::cin >> line;
-                basic_debugger::addr_t break_addr = debugger.append_break_point(first_argument, line);
-
-                if(break_addr) {
-                    printf("break point added at %p\n", (void*)break_addr);
-                    //todo show source
-                } else {
-                    printf("failed to put break point at %s:%zi: the file does not exists or does not have any breakable line.\n", first_argument.c_str(), line);
-                }
-            }
-
-        } else if(command == "p") {
-            std::string format;
-            std::string __address;
-
-            std::cin >> format;
-            std::cin >> __address;
-
-            uint64_t address;
-
-            if(__address.starts_with("0x")) {
-                __address.erase(0, 2);
-
-                address = std::stoll(__address, nullptr, 16);
-            } else {
-                address = std::stoll(__address);
-            }
-
-            if(format == "c") {
-                
-                uint8_t c = debugger.read_char_at(address);
-                printf("'%c' 0x%02hhx\n", c, (unsigned int)c);
-            }
-        }
-        else if(command == "&&") {
-            continue;
-        }
-    }
-
-    return 0;
+    GetThreadContext(m_process_info.hThread, &lcContext);
+    lcContext.EFlags |= 0x100;
+    SetThreadContext(m_process_info.hThread,&lcContext);
+#endif
 }
+
+bool uva::diagnostics::basic_debugger::get_current_line_and_source(std::string &source, size_t line)
+{
+#ifdef __UVA_WIN__
+    DWORD  dwDisplacement;
+    IMAGEHLP_LINE64 source_line;
+
+    SymSetOptions(SYMOPT_LOAD_LINES);
+
+    source_line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+    if (SymGetLineFromAddr64(m_process_info.hProcess, current_address, &dwDisplacement, &source_line))
+    {
+        source = source_line.FileName;
+        line   = source_line.LineNumber;
+    }
+    return false;
+#endif
+
+    return false;
+}
+
+// class test_debugger : public basic_debugger
+// {
+// public:
+//     virtual void on_new_process(const std::string& path, addr_t address, bool symbols) override
+//     {
+//         printf("New process '%s' loaded at '%p'", path.c_str(), (void*)address);
+
+//         if(symbols) {
+//             puts(" with symbols.");
+//         } else {
+//             puts(".");
+//         }
+//     }
+
+//     virtual void on_loaded_dll(const std::string& path, addr_t address, bool symbols) override
+//     {
+//         printf("Load DLL '%s' at '%p'", path.c_str(), (void*)address);
+
+//         if(symbols) {
+//             puts(" with symbols.");
+//         } else {
+//             puts(".");
+//         }
+//     }
+
+//     virtual void on_break_point(const break_point& break_point) override
+//     {
+//         printf("got a breakpoint at %s:%zi\n", break_point.file.source.c_str(), break_point.line);
+//     }
+
+//     virtual void on_step() override
+//     {
+//         puts("got a step");
+//     }
+
+//     virtual void on_exit_process(size_t exit_code) override
+//     {
+//         printf("process exited with exit code: %x\n", (unsigned int)exit_code);
+//     }
+
+// };
+
+// int main()
+// {
+//     std::string process_name;
+//     puts("l filename         - load process at filename and attach to it.");
+//     puts("r                  - run the loaded process.");
+//     puts("ab file line       - add breakpoint at file, line.");
+//     puts("ab address         - add breakpoint at address.");
+//     puts("p [c|i|cs] address - print char, integer or c-string at address");
+
+//     test_debugger debugger;
+
+//     std::thread* thread = nullptr;
+
+//     std::condition_variable wait_variable;
+
+//     while(1) {
+//         std::string command;
+//         std::cin >> command;
+
+//         if(command == "l") {
+//             if(thread) {
+//                 puts("error: currently debugging, stop first.");
+//                 continue;
+//             }
+
+//             std::cin >> process_name;
+//             thread = new std::thread([&debugger, &process_name, &wait_variable](){
+//                 debugger.create_and_attach_debugee_process(process_name);
+
+//                 wait_variable.notify_one();
+
+//                 std::mutex wait_mutex;
+
+//                 std::unique_lock<std::mutex> ul(wait_mutex);
+//                 wait_variable.wait(ul);
+
+//                 puts("run signal received.");
+//                 debugger.run();
+//             });
+
+//             std::mutex wait_mutex;
+//             std::unique_lock<std::mutex> ul(wait_mutex);
+//             wait_variable.wait(ul);
+
+//             puts("loaded signal received.");
+//         } else if(command == "r") {
+//             if(!thread) {
+//                 puts("error: not currently debugging, load first.");
+//                 continue;
+//             }
+
+//             wait_variable.notify_one();
+//         } else if(command == "ab") {
+//             std::string first_argument;
+//             size_t line;
+
+//             std::cin >> first_argument;
+
+//             if(first_argument.starts_with("0x")) {
+//                 first_argument.erase(0, 2);
+
+//                 uint64_t address = std::stoll(first_argument, nullptr, 16);
+//                 std::string file = debugger.append_break_point(address);
+
+//                 if(file.size()) {
+//                     printf("break point added at '%s'\n", file.c_str());
+//                     //todo show source
+//                 } else {
+//                     printf("break point added at %p, but it may be not relevant to any line.\n", (void*)address);
+//                 }
+//             } else if(isdigit(first_argument.front()))
+//             {
+//                 uint64_t address = std::stoll(first_argument);
+//                 std::string file = debugger.append_break_point(address);
+
+//                 if(file.size()) {
+//                     printf("break point added at '%s'\n", file.c_str());
+//                     //todo show source
+//                 } else {
+//                     printf("break point added at %p, but it may be not relevant to any line.\n", (void*)address);
+//                 }
+//             } else {
+//                 std::cin >> line;
+//                 basic_debugger::addr_t break_addr = debugger.append_break_point(first_argument, line);
+
+//                 if(break_addr) {
+//                     printf("break point added at %p\n", (void*)break_addr);
+//                     //todo show source
+//                 } else {
+//                     printf("failed to put break point at %s:%zi: the file does not exists or does not have any breakable line.\n", first_argument.c_str(), line);
+//                 }
+//             }
+
+//         } else if(command == "p") {
+//             std::string format;
+//             std::string __address;
+
+//             std::cin >> format;
+//             std::cin >> __address;
+
+//             uint64_t address;
+
+//             if(__address.starts_with("0x")) {
+//                 __address.erase(0, 2);
+
+//                 address = std::stoll(__address, nullptr, 16);
+//             } else {
+//                 address = std::stoll(__address);
+//             }
+
+//             if(format == "c") {
+                
+//                 uint8_t c = debugger.read_char_at(address);
+//                 printf("'%c' 0x%02hhx\n", c, (unsigned int)c);
+//             }
+//         }
+//         else if(command == "&&") {
+//             continue;
+//         }
+//     }
+
+//     return 0;
+// }
 
 basic_debugger::source_file::source_file(const std::string &__source, const std::string &__object)
     : source(__source), object(__object)

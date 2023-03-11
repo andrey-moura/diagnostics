@@ -111,11 +111,17 @@ namespace uva
             /// @param addr The address of the char
             /// @return The char at address
             uint8_t read_char_at(uint64_t addr);
+
+            void set_trap_flag();
+
+            bool get_current_line_and_source(std::string& source, size_t line);
         public:
             /// @brief The source line mapped by address. Public for easy access from platform specific code. It is internal.
             //std::map<addr_t, source_file> m_source_files;
 
             std::vector<source_file> m_source_files;
+        public:
+            addr_t current_address;
         protected:
             virtual void on_new_process(const std::string& path, addr_t address, bool symbols)
             {
