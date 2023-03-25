@@ -64,6 +64,7 @@ namespace uva
                 source_file file;
                 size_t line;
                 uint8_t byte;
+                void* address;
             };
         public:
             /// @brief The debugger is initialized without knowing the debugee. 
@@ -114,14 +115,16 @@ namespace uva
 
             void set_trap_flag();
 
-            bool get_current_line_and_source(std::string& source, size_t line);
+            bool get_current_line_and_source(std::string& source, size_t& line);
         public:
             /// @brief The source line mapped by address. Public for easy access from platform specific code. It is internal.
             //std::map<addr_t, source_file> m_source_files;
 
             std::vector<source_file> m_source_files;
         public:
+            //addr_t current_address();
             addr_t current_address;
+            break_point* m_last_break_point = nullptr;
         protected:
             virtual void on_new_process(const std::string& path, addr_t address, bool symbols)
             {
@@ -136,6 +139,10 @@ namespace uva
                 
             }
             virtual void on_break_point(const break_point& break_point)
+            {
+
+            }
+            virtual void on_debug_string(std::string s)
             {
 
             }

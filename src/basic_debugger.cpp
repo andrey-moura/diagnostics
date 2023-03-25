@@ -73,6 +73,7 @@ std::string GetFileNameFromHandle(HANDLE hFile)
 
 DWORD64 load_module(HANDLE process, std::string_view path, DWORD64 base_addr)
 {
+    SymSetOptions(SYMOPT_LOAD_LINES);
     return SymLoadModuleEx(process, NULL, path.data(), NULL, base_addr, 0, 0, 0);
 }
 
@@ -122,6 +123,7 @@ void basic_debugger::process_event()
                 case EXCEPTION_BREAKPOINT: {
                     if(m_has_hit_entry_breakpoint) {
                         DWORD_PTR dwExceptionAddress = (DWORD_PTR)m_debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+                        current_address = dwExceptionAddress;
 
                         auto it = m_break_points.find(dwExceptionAddress);
                         status = DBG_CONTINUE;
@@ -133,6 +135,9 @@ void basic_debugger::process_event()
                             go_back_instruction_pointer();
 
                             on_break_point(it->second);
+                            m_last_break_point = &it->second;
+
+                            set_trap_flag();
                         }
                     } else {
                         on_execution_started();
@@ -145,12 +150,46 @@ void basic_debugger::process_event()
                 case EXCEPTION_SINGLE_STEP:
                     status = DBG_CONTINUE;
                     if(m_debug_event.u.Exception.dwFirstChance) {
-                        current_address = (addr_t)m_debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+                        current_address = (DWORD_PTR)m_debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+
+                        if(m_last_break_point) {
+                            replace_byte_at_address(0xcc, m_last_break_point->address);
+                            m_last_break_point = nullptr;
+                        }
+
                         on_step();
                     }
                 break;
             }
             break;
+        break;
+        case OUTPUT_DEBUG_STRING_EVENT: {
+            std::string s;
+            s.resize(m_debug_event.u.DebugString.nDebugStringLength-1);
+
+            SIZE_T read;
+            ReadProcessMemory(m_process_info.hProcess, m_debug_event.u.DebugString.lpDebugStringData, s.data(), m_debug_event.u.DebugString.nDebugStringLength-1, &read);
+
+            if(read != s.size()) {
+                //throw
+            }
+
+            //on_debug_string(std::move(s));
+            on_debug_string(s);
+
+            if(s == "end coverage") {
+                #define RESUME_FLAG 0x10000
+
+                CONTEXT Context = {};
+                Context.ContextFlags = CONTEXT_ALL;// not need CONTEXT_FULL here;
+                if (GetThreadContext(m_process_info.hProcess, &Context))
+                {
+                    Context.EFlags |= RESUME_FLAG; // !!! this line is key point
+                    SetThreadContext(m_process_info.hProcess, &Context);
+                }
+            }
+
+        }
         break;
         case EXIT_PROCESS_DEBUG_EVENT:
         {
@@ -205,6 +244,13 @@ bool basic_debugger::load_module_info(DWORD64 __module, PROCESS_INFORMATION &pro
                 });
                 return true;
             }, (void*)context);
+
+            if(context->last_file)
+            {
+                std::sort(context->last_file->lines.begin(), context->last_file->lines.end(), [](uva::diagnostics::basic_debugger::source_line& left, uva::diagnostics::basic_debugger::source_line& right) {
+                    return left.line < right.line;
+                });
+            }
 
             return true;
         }, &context);
@@ -279,7 +325,7 @@ bool basic_debugger::create_and_attach_debugee_process(const std::string &path)
     run();
 #endif
 
-    return false;
+    return true;
 }
 
 std::string basic_debugger::get_last_error_msg() {
@@ -356,7 +402,7 @@ basic_debugger::addr_t basic_debugger::append_break_point(const std::string &fil
 
     uint8_t byte = replace_byte_at_address(0xcc, (void*)it->address);
 
-    m_break_points.insert({it->address, { *source_file, it->line, byte } });
+    m_break_points.insert({it->address, { *source_file, it->line, byte, (void*)it->address } });
 
     return it->address;
 }
@@ -385,7 +431,7 @@ std::string uva::diagnostics::basic_debugger::append_break_point(uint64_t addres
     }
 
     uint8_t byte = replace_byte_at_address(0xcc, (void*)address);
-    m_break_points.insert({address, { {}, 0, byte } });
+    m_break_points.insert({ address, { {}, 0, byte, (void*)address } });
 
     return path;
 }
@@ -431,32 +477,100 @@ void uva::diagnostics::basic_debugger::set_trap_flag()
     CONTEXT lcContext;
     lcContext.ContextFlags = CONTEXT_ALL;
 
-    GetThreadContext(m_process_info.hThread, &lcContext);
-    lcContext.EFlags |= 0x100;
-    SetThreadContext(m_process_info.hThread,&lcContext);
+    if(GetThreadContext(m_process_info.hThread, &lcContext)) {
+        lcContext.EFlags |= 0x100;
+        SetThreadContext(m_process_info.hThread,&lcContext);
+    }
 #endif
 }
 
-bool uva::diagnostics::basic_debugger::get_current_line_and_source(std::string &source, size_t line)
+bool uva::diagnostics::basic_debugger::get_current_line_and_source(std::string &source, size_t& line)
 {
 #ifdef __UVA_WIN__
+//     CONTEXT context;
+//     context.ContextFlags = CONTEXT_FULL;
+//     GetThreadContext(m_process_info.hProcess, &context);
+
+//     STACKFRAME64 stack={0};
+
+// #ifdef _M_IX86
+//     stack.AddrPC.Offset = context.Eip; // EIP - Instruction Pointer
+// #else
+//     stack.AddrPC.Offset = context.Rip; // RIP - Instruction Pointer
+// #endif
+//     stack.AddrPC.Mode = AddrModeFlat;
+
+// #ifdef _M_IX86
+//     stack.AddrFrame.Offset = context.Ebp; // EBP
+// #else
+//     stack.AddrFrame.Offset = context.Rbp; // RBP
+// #endif
+//     stack.AddrFrame.Mode = AddrModeFlat;
+
+// #ifdef _M_IX86
+//     stack.AddrStack.Offset = context.Esp; // ESP - Stack Pointer
+// #else
+//     stack.AddrStack.Offset = context.Rsp; // RSP - Stack Pointer
+// #endif
+
+//     stack.AddrStack.Mode = AddrModeFlat;
+
+//     StackWalk64(IMAGE_FILE_MACHINE_I386, m_process_info.hProcess, m_process_info.hThread, &stack,
+//                &context, [](HANDLE hProcess, DWORD64 qwBaseAddress, PVOID lpBuffer, DWORD nSize, LPDWORD lpNumberOfBytesRead) -> BOOL {
+//                     return ReadProcessMemory(hProcess, (void*)qwBaseAddress, lpBuffer, nSize, (SIZE_T*)lpNumberOfBytesRead);
+//                }, SymFunctionTableAccess64, SymGetModuleBase64, 0);
+
     DWORD  dwDisplacement;
     IMAGEHLP_LINE64 source_line;
 
-    SymSetOptions(SYMOPT_LOAD_LINES);
-
     source_line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+    // for(const auto& file : m_source_files) {
+    //     for(const auto& line : file.lines) {
+    //         if(line.address == current_address) {
+    //             std::cout << file.source << ":" << line.line << std::endl;
+    //         }
+    //     }
+    // }
+
+    CONTEXT context;
+    context.ContextFlags = CONTEXT_ALL;
+    GetThreadContext(m_process_info.hProcess, &context);
+
+#ifdef _M_IX86
+    //current_address = context.Eip; // EIP - Instruction Pointer
+#else
+    //current_address = context.Rip; // RIP - Instruction Pointer
+#endif
 
     if (SymGetLineFromAddr64(m_process_info.hProcess, current_address, &dwDisplacement, &source_line))
     {
         source = source_line.FileName;
         line   = source_line.LineNumber;
+
+        return true;
     }
-    return false;
 #endif
 
     return false;
 }
+
+// uva::diagnostics::basic_debugger::addr_t uva::diagnostics::basic_debugger::current_address()
+// {
+// #ifdef __UVA_WIN__
+//     CONTEXT context;
+//     context.ContextFlags = CONTEXT_ALL;
+//     GetThreadContext(m_process_info.hProcess, &context);
+
+// #ifdef _M_IX86
+//     return context.Eip; // EIP - Instruction Pointer
+// #else
+//     return context.Rip; // RIP - Instruction Pointer
+// #endif
+
+
+// #endif
+// }
 
 // class test_debugger : public basic_debugger
 // {
