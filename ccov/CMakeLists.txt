@@ -3,8 +3,6 @@ cmake_minimum_required(VERSION 3.10)
 
 project(ccov)
 
-include(${CONSOLE_ROOT_DIR}/console.cmake)
-
 add_console_app(ccov)
 
 target_link_libraries(ccov uva-console uva-core uva-routing uva-debugger uva-json uva-file)
