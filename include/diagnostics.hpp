@@ -20,7 +20,7 @@ namespace uva
 				auto start = std::chrono::high_resolution_clock::now();
 				auto ret = function(std::forward<Args>(args)...);
 				auto end = std::chrono::high_resolution_clock::now();
-				return std::make_pair<decltype(ret), std::chrono::duration_cast<std::chrono::nanoseconds>>(std::move(ret), std::chrono::duration_cast<std::chrono::nanoseconds>(end - start));
+				return std::pair{ std::move(ret), std::chrono::duration_cast<std::chrono::nanoseconds>(end - start) };
 			}
 		}
 	};
