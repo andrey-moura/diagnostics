@@ -17,7 +17,7 @@ class ccov_debugger : public basic_debugger
 public:
     ccov_debugger(const std::string& project_path, std::vector<std::string> interesting_files);
 public:
-    var m_coverage_info = empty_map;
+    var m_coverage_info = var::map();
     std::vector<std::string> m_interesting_files;
     std::map<std::string, var*> m_covered_files;
 private:
@@ -40,7 +40,7 @@ ccov_debugger::ccov_debugger(const std::string& project_path, std::vector<std::s
     : basic_debugger(), m_project_path(project_path), m_interesting_files(std::move(interesting_files))
 {
     m_coverage_info["run"] = time(NULL);
-    m_coverage_info["hits"] = empty_map;
+    m_coverage_info["hits"] = var::map();
 
     var& files = m_coverage_info["files"] = var::array();
     
